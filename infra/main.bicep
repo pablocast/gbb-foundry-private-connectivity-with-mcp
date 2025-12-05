@@ -5,16 +5,6 @@
 // Typically, parameters would be decorated with appropriate metadata and attributes, but as they are very repetetive in these labs we omit them for brevity.
 
 param apimSku string
-param openAIConfig array = []
-param openAIModelName string
-param openAIModelVersion string
-param openAIDeploymentName string
-
-@description('Azure OpenAI Sku')
-@allowed([
-  'S0'
-])
-param openAISku string = 'S0'
 
 @description('The relative path of the APIM API for OpenAI API')
 param openAIAPIPath string = 'openai'
@@ -24,9 +14,6 @@ param openAIAPISpecURL string = 'https://raw.githubusercontent.com/Azure/azure-r
 
 @description('The name of the APIM Subscription for OpenAI API')
 param openAISubscriptionName string = 'openai-subscription'
-
-@description('The name of the OpenAI backend pool')
-param openAIBackendPoolName string = 'openai-backend-pool'
 
 @description('The name of the APIM API for OpenAI API')
 param openAIAPIName string = 'openai'
@@ -59,6 +46,9 @@ param vmAdminUsername string = 'azureuser'
 #disable-next-line secure-parameter-default
 param vmAdminPassword string = '@Aa123456789' // should be secured in real world
 
+param modelsConfig array = []
+
+
 // ------------------
 //    VARIABLES
 // ------------------
@@ -68,26 +58,12 @@ var virtualNetworkName = 'vnet-spoke'
 var subnetAiServicesName = 'snet-aiservices'
 var subnetApimName = 'snet-apim'
 var subnetVmName = 'snet-vm'
+var peSubnetName = 'snet-pe'
+var aiFoundryName = 'foundry${suffix}'
+var aiFoundryProjectName = 'foundry-project-${suffix}'
 
 // Account for all placeholders in the polixy.xml file.
 var policyXml = loadTextContent('policy.xml')
-var updatedPolicyXml = replace(
-  policyXml,
-  '{backend-id}',
-  (length(openAIConfig) > 1) ? 'openai-backend-pool' : openAIConfig[0].name
-)
-var azureRoles = loadJsonContent('./modules/azure-roles.json')
-var cognitiveServicesOpenAIUserRoleDefinitionID = resourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  azureRoles.CognitiveServicesOpenAIUser
-)
-
-var privateDnsZoneNamesAiServices = [
-  'privatelink.cognitiveservices.azure.com'
-  'privatelink.openai.azure.com'
-  'privatelink.services.ai.azure.com'
-]
-
 // ------------------
 //    RESOURCES
 // ------------------
@@ -136,6 +112,12 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-11-01' = {
           addressPrefix: '10.0.2.0/24'
         }
       }
+      {
+        name: peSubnetName
+        properties: {
+          addressPrefix: '10.0.3.0/24'
+        }
+      }
     ]
   }
 
@@ -152,117 +134,136 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   }
 }
 
-resource cognitiveServices 'Microsoft.CognitiveServices/accounts@2024-10-01' = [
-  for config in openAIConfig: if (length(openAIConfig) > 0) {
-    name: '${config.name}-${suffix}'
-    location: config.location
-    sku: {
-      name: openAISku
-    }
-    kind: 'AIServices'
-    properties: {
-      customSubDomainName: toLower('${config.name}-${suffix}')
-      publicNetworkAccess: 'Disabled'
-      // apiProperties: {
-      //   statisticsEnabled: false
-      // }
-    }
+resource subnetPe 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: virtualNetwork
+  name: peSubnetName
+  properties: {
+    addressPrefix: '10.0.3.0/24'
   }
-]
+}
 
-@batchSize(1)
-resource modelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = [
-  for (config, i) in openAIConfig: if (length(openAIConfig) > 0) {
-    name: openAIDeploymentName
-    parent: cognitiveServices[i]
-    properties: {
-      model: {
-        format: 'OpenAI'
-        name: openAIModelName
-        version: openAIModelVersion
-      }
-    }
-    sku: {
-      name: 'Standard'
-      capacity: config.capacity
-    }
-  }
-]
 
-resource roleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for (config, i) in openAIConfig: if (length(openAIConfig) > 0) {
-    scope: cognitiveServices[i]
-    name: guid(subscription().id, resourceGroup().id, config.name, cognitiveServicesOpenAIUserRoleDefinitionID)
-    properties: {
-      roleDefinitionId: cognitiveServicesOpenAIUserRoleDefinitionID
-      principalId: apimService.identity.principalId
-      principalType: 'ServicePrincipal'
-    }
+// Create Foundry Account
+module foundryAccountModule './modules/foundry.bicep' = {
+  name: 'foundryAccountDeployment'
+  params: {
+    location: resourceGroup().location
+    aiFoundryName: aiFoundryName
+    aiFoundryProjectName: aiFoundryProjectName
+    modelsConfig: modelsConfig
+    logAnalyticsName: 'log-analytics-${suffix}'
   }
-]
+}
+
 
 // Create private endpoint if enabled
-resource privateEndpointAiServices 'Microsoft.Network/privateEndpoints@2021-05-01' = [
-  for (config, i) in openAIConfig: if (length(openAIConfig) > 0) {
-    name: '${config.name}-${suffix}-privateendpoint'
-    location: resourceGroup().location
-    properties: {
-      customNetworkInterfaceName: '${config.name}-${suffix}-nic'
-      subnet: {
-        id: virtualNetwork::subnetAiServices.id
-      }
-      privateLinkServiceConnections: [
-        {
-          name: '${config.name}-${suffix}-privateLinkServiceConnection'
-          properties: {
-            privateLinkServiceId: cognitiveServices[i].id
-            groupIds: ['account']
-          }
+resource aiAccountPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: '${aiFoundryName}-private-endpoint'
+  location: resourceGroup().location
+  properties: {
+    subnet: {
+      id: subnetPe.id                    // Deploy in customer hub subnet
+    }
+    privateLinkServiceConnections: [
+      {
+        name: '${aiFoundryName}-private-link-service-connection'
+        properties: {
+          privateLinkServiceId: foundryAccountModule.outputs.aiFoundryId
+          groupIds: [
+            'account'                     // Target AI Services account
+          ]
         }
-      ]
-    }
-  }
-]
-
-resource privateDnsZoneAiServices 'Microsoft.Network/privateDnsZones@2020-06-01' = [
-  for (privateDnsZoneName, i) in privateDnsZoneNamesAiServices: if (length(privateDnsZoneNamesAiServices) > 0) {
-    name: privateDnsZoneName
-    location: 'global'
-  }
-]
-
-// link private DNS zone to the virtual network
-resource privateDnsZoneAiServicesLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = [
-  for (privateDnsZoneName, i) in privateDnsZoneNamesAiServices: if (length(privateDnsZoneNamesAiServices) > 0) {
-    name: '${privateDnsZoneName}-link'
-    location: 'global'
-    parent: privateDnsZoneAiServices[i]
-    properties: {
-      registrationEnabled: false
-      virtualNetwork: {
-        id: virtualNetwork.id
       }
-    }
+    ]
   }
-]
+}
 
-// privateDnsZoneGroups for private endpoints - one per private endpoint
-resource privateEndpointDnsGroupAiServices 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2021-05-01' = [
-  for (config, i) in openAIConfig: if (length(openAIConfig) > 0) {
-    name: '${config.name}-${suffix}-dnsZoneGroup'
-    parent: privateEndpointAiServices[i]
-    properties: {
-      privateDnsZoneConfigs: [
-        for (privateDnsZoneName, j) in privateDnsZoneNamesAiServices: {
-          name: 'config${j}'
-          properties: {
-            privateDnsZoneId: privateDnsZoneAiServices[j].id
-          }
-        }
-      ]
+resource aiServicesPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.services.ai.azure.com'
+  location: 'global'
+}
+
+resource openAiPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.openai.azure.com'
+  location: 'global'
+}
+
+resource cognitiveServicesPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.cognitiveservices.azure.com'
+  location: 'global'
+}
+
+// Link AI Services and Azure OpenAI and Cognitive Services DNS Zone to VNet
+resource aiServicesLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: aiServicesPrivateDnsZone
+  location: 'global'
+  name: 'aiServices-link'
+  properties: {
+    virtualNetwork: {
+      id: virtualNetwork.id                        // Link to specified VNet
     }
+    registrationEnabled: false           // Don't auto-register VNet resources
   }
-]
+}
+
+resource aiOpenAILink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: openAiPrivateDnsZone
+  location: 'global'
+  name: 'aiServicesOpenAI-link'
+  properties: {
+    virtualNetwork: {
+      id: virtualNetwork.id                        // Link to specified VNet
+    }
+    registrationEnabled: false           // Don't auto-register VNet resources
+  }
+}
+
+resource cognitiveServicesLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: cognitiveServicesPrivateDnsZone
+  location: 'global'
+  name: 'aiServicesCognitiveServices-link'
+  properties: {
+    virtualNetwork: {
+      id: virtualNetwork.id                      // Link to specified VNet
+    }
+    registrationEnabled: false           // Don't auto-register VNet resources
+  }
+}
+
+// 3) DNS Zone Group for AI Services
+resource aiServicesDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: aiAccountPrivateEndpoint
+  name: '${aiFoundryName}-dns-group'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: '${aiFoundryName}-dns-aiserv-config'
+        properties: {
+          privateDnsZoneId: aiServicesPrivateDnsZone.id
+        }
+      }
+      {
+        name: '${aiFoundryName}-dns-openai-config'
+        properties: {
+          privateDnsZoneId: openAiPrivateDnsZone.id
+        }
+      }
+      {
+        name: '${aiFoundryName}-dns-cogserv-config'
+        properties: {
+          privateDnsZoneId: cognitiveServicesPrivateDnsZone.id
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    aiServicesLink 
+    cognitiveServicesLink
+    aiOpenAILink
+  ]
+}
+
+
 
 // API Management Service
 // https://learn.microsoft.com/azure/templates/microsoft.apimanagement/service
@@ -314,58 +315,7 @@ resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2021-12-01-pre
   parent: api
   properties: {
     format: 'rawxml'
-    value: updatedPolicyXml // loadTextContent('policy.xml')
-  }
-}
-
-resource backendOpenAI 'Microsoft.ApiManagement/service/backends@2023-05-01-preview' = [
-  for (config, i) in openAIConfig: if (length(openAIConfig) > 0) {
-    name: config.name
-    parent: apimService
-    properties: {
-      description: 'backend description'
-      url: '${cognitiveServices[i].properties.endpoint}/openai'
-      protocol: 'http'
-      circuitBreaker: {
-        rules: [
-          {
-            failureCondition: {
-              count: 3
-              errorReasons: [
-                'Server errors'
-              ]
-              interval: 'PT5M'
-              statusCodeRanges: [
-                {
-                  min: 429
-                  max: 429
-                }
-              ]
-            }
-            name: 'openAIBreakerRule'
-            tripDuration: 'PT1M'
-          }
-        ]
-      }
-    }
-  }
-]
-
-resource backendPoolOpenAI 'Microsoft.ApiManagement/service/backends@2023-05-01-preview' = if (length(openAIConfig) > 1) {
-  name: openAIBackendPoolName
-  parent: apimService
-  // BCP035: protocol and url are not needed in the Pool type. This is an incorrect error.
-  #disable-next-line BCP035
-  properties: {
-    description: 'Load balancer for multiple OpenAI endpoints'
-    type: 'Pool'
-    pool: {
-      services: [
-        for (config, i) in openAIConfig: {
-          id: '/backends/${backendOpenAI[i].name}'
-        }
-      ]
-    }
+    value: loadTextContent('policy.xml')
   }
 }
 
@@ -672,19 +622,6 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   }
 }
 
-resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-12-01-preview' = {
-  name: 'log-alanalytics-${suffix}'
-  location: resourceGroup().location
-  properties: {
-    retentionInDays: 30
-    features: {
-      searchVersion: 1
-    }
-    sku: {
-      name: 'PerGB2018'
-    }
-  }
-}
 
 resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: 'app-insights'
@@ -692,28 +629,11 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   kind: 'web'
   properties: {
     Application_Type: 'web'
-    WorkspaceResourceId: logAnalytics.id
+    WorkspaceResourceId: foundryAccountModule.outputs.logAnalyticsWorkspaceId
     // CustomMetricsOptedInType: 'WithDimensions'
   }
 }
 
-// https://learn.microsoft.com/azure/templates/microsoft.insights/diagnosticsettings
-resource diagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = [
-  for (config, i) in openAIConfig: if (length(openAIConfig) > 0) {
-    name: '${cognitiveServices[i].name}-diagnostics'
-    scope: cognitiveServices[i]
-    properties: {
-      workspaceId: logAnalytics.id
-      logs: []
-      metrics: [
-        {
-          category: 'AllMetrics'
-          enabled: true
-        }
-      ]
-    }
-  }
-]
 
 resource apimLogger 'Microsoft.ApiManagement/service/loggers@2021-12-01-preview' = {
   name: 'apimLogger'
@@ -770,7 +690,7 @@ resource logAnalyticsWorkspaceDiagnostics 'Microsoft.Insights/diagnosticSettings
   scope: frontDoorProfile
   name: 'diagnosticSettings'
   properties: {
-    workspaceId: logAnalytics.id
+    workspaceId: foundryAccountModule.outputs.logAnalyticsWorkspaceId
     logs: [
       {
         category: 'FrontDoorWebApplicationFirewallLog'
