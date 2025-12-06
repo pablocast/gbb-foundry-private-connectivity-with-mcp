@@ -40,6 +40,12 @@ param vmName string = 'vm-jumpbox'
 @description('The admin username for the virtual machine')
 param vmAdminUsername string = 'azureuser'
 
+@description('The display name for the MCP Entra application')
+param mcpEntraAppName string
+
+@description('MCP App Client ID - if already created manually, provide it here to skip automatic creation')
+param mcpClientId string = ''
+
 @secure()
 @description('The admin password for the virtual machine')
 // Ignoring the password warning as this is strictly for demo purposes and should be secured in a real-world scenario.
@@ -48,6 +54,7 @@ param vmAdminPassword string = '@Aa123456789' // should be secured in real world
 
 param modelsConfig array = []
 
+param apicLocation string
 
 // ------------------
 //    VARIABLES
@@ -287,6 +294,66 @@ resource apimService 'Microsoft.ApiManagement/service@2024-06-01-preview' = {
     type: 'SystemAssigned'
   }
 }
+
+// apic
+module apicModule './modules/apic.bicep' = {
+  name: 'apicModule'
+  params: {
+    apicServiceName: 'apic-${suffix}'
+    location: apicLocation
+  }
+}
+
+// add mcp entra
+module managedIdentityModule './modules/userAssignedIdentity.bicep' = {
+  name: 'managedIdentityModule'
+  params: {
+    identityName: 'mi-mcp-${suffix}'
+    location: resourceGroup().location
+  }
+}
+
+module mcpEntraAppModule './modules/mcp-entra-app.bicep' = if (empty(mcpClientId)) {
+  name: 'mcpEntraAppModule'
+  params: {
+    mcpAppUniqueName: mcpEntraAppName
+    mcpAppDisplayName: mcpEntraAppName
+    tenantId: subscription().tenantId
+    userAssignedIdentityPrincipleId: managedIdentityModule.outputs.identityPrincipalId
+  }
+}
+
+// PlaceOrder MCP 
+module placeOrderAPIModule './mcp-api/place-order/api/api.bicep' = {
+  name: 'placeOrderAPIModule'
+  params: {
+    apimServiceName: 'apim-${suffix}'
+    apicServiceName: apicModule.outputs.name
+    environmentName: apicModule.outputs.apiEnvironmentName
+  }
+  dependsOn: [
+    apimService
+    apicModule
+  ]
+}
+
+module placeOrderMCPModule './mcp-api/place-order/mcp-server/mcp.bicep' = {
+  name: 'placeOrderMCPModule'
+  params: {
+    apimServiceName: 'apim-${suffix}'
+    apicServiceName: apicModule.outputs.name
+    environmentName: apicModule.outputs.mcpEnvironmentName
+    apiName: placeOrderAPIModule.outputs.name
+    mcpAppId: mcpEntraAppModule.?outputs.mcpAppId 
+    mcpAppTenantId: subscription().tenantId
+  }
+  dependsOn: [
+    apicModule
+    placeOrderAPIModule
+    mcpEntraAppModule
+  ]
+}
+
 
 resource api 'Microsoft.ApiManagement/service/apis@2023-05-01-preview' = {
   name: openAIAPIName
@@ -636,7 +703,7 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
 
 
 resource apimLogger 'Microsoft.ApiManagement/service/loggers@2021-12-01-preview' = {
-  name: 'apimLogger'
+  name: 'appinsights-logger'
   parent: apimService
   properties: {
     credentials: {
@@ -722,3 +789,6 @@ output apimResourceGatewayURL string = apimService.properties.gatewayUrl
 #disable-next-line outputs-should-not-contain-secrets
 output apimSubscriptionKey string = apimSubscription.listSecrets().primaryKey
 output frontDoorEndpointHostName string = frontDoorEndpoint.properties.hostName
+output ai_project_endpoint string = foundryAccountModule.outputs.aiFoundryProjectEndpoint
+output ai_model_deployment_name string = modelsConfig[0].name
+

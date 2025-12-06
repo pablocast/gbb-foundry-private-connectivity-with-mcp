@@ -99,3 +99,4 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2021-12-01-previ
 
 output aiFoundryId string = account.id
 output logAnalyticsWorkspaceId string = logAnalytics.id
+output aiFoundryProjectEndpoint string = 'https://${account.name}.services.ai.azure.com/api/projects/${project.name}'
