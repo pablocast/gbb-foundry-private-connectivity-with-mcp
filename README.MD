@@ -83,7 +83,7 @@ Once connected to the jumpbox, create the required scripts:
 
 #### 1. Create `load_env_from_kv.py`
 
-Copy the content from [`src/load_env_from_kv.py`](src/load_env_from_kv.py) using the same `cat` method.
+Copy the content from [`src/load_env_from_kv.py`](src/load_env_from_kv.py) using the `cat` method.
 
 #### 2. Create `sample_agents_mcp.py`
 
