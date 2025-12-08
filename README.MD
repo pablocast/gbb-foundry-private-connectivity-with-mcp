@@ -115,6 +115,19 @@ The script will:
 4. Process MCP tool calls through APIM
 5. Display the conversation and results
 
+### Expected Output
+
+When you run the agent successfully, you'll see output similar to this:
+
+![Execution Evidence](docs/execution-evidence.png)
+
+The output shows:
+- Run status progressing through states (IN_PROGRESS → COMPLETED)
+- MCP tool calls being invoked
+- The PlaceOrder function being called with parameters
+- The conversation between user and assistant
+- Order confirmation with order ID 5219
+
 ## 🧹 Clean Up Resources
 
 When finished, delete all resources to avoid charges: <br>
