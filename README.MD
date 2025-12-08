@@ -117,7 +117,7 @@ The script will:
 
 ## 🧹 Clean Up Resources
 
-When finished, delete all resources to avoid charges:
+When finished, delete all resources to avoid charges: <br>
 Use [clean-up-resources notebook](notebooks/clean-up-resources.ipynb).
 
 ## 📚 Additional Resources
