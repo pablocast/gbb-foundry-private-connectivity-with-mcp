@@ -23,7 +23,6 @@ This lab demonstrates a fully private AI infrastructure:
 - [VS Code](https://code.visualstudio.com/) with [Jupyter extension](https://marketplace.visualstudio.com/items?itemName=ms-toolsai.jupyter) enabled
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and authenticated
 - [An Azure Subscription](https://azure.microsoft.com/free/) with Contributor permissions
-- [Azure AI Foundry access](https://aka.ms/oai/access) (or use mock service)
 
 ## 🚀 Deployment
 
