@@ -1,29 +1,128 @@
-# APIM ❤️ OpenAI
+# Azure AI Foundry Private Connectivity Lab
 
-## [Private Connectivity Lab](private-connectivity.ipynb)
+A hands-on lab demonstrating secure agent consumption through private networking with Azure AI Foundry, API Management, and Front Door. Features MCP (Model Context Protocol) integration, private endpoints, and agent-based interactions. MCP servers are only accessible through the frontdoor. 
 
 ![architecture](architecture.png)
 
-Playground to try the private connectivity [private connectivity functionality of APIM](https://learn.microsoft.com/en-us/azure/api-management/private-endpoint?tabs=v2) to a list of Azure OpenAI private endpoints.
+## 🏗️ Architecture
 
+This lab demonstrates a fully private AI infrastructure:
 
-### Prerequisites
+- **Azure AI Foundry**: AI Services account with private endpoint access only
+- **Azure API Management (APIM)**: Deployed in VNet, manages traffic to AI services via private endpoints
+- **Azure Front Door**: Premium tier with Private Link to APIM - the only publicly accessible endpoint
+- **Azure Key Vault**: Stores secrets, accessible only from private network
+- **Jumpbox VM**: Ubuntu VM with managed identity for testing from private network
+- **MCP Integration**: Model Context Protocol server exposed through APIM
 
-- [Python 3.12 or later version](https://www.python.org/) installed
-- [VS Code](https://code.visualstudio.com/) installed with the [Jupyter notebook extension](https://marketplace.visualstudio.com/items?itemName=ms-toolsai.jupyter) enabled
-- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed
+**Network Flow**: Client → Front Door (Public) → Private Link → APIM (Private VNet) → Private Endpoint → AI Foundry
+
+## 📋 Prerequisites
+
+- [Python 3.11 or later](https://www.python.org/) installed locally
+- [VS Code](https://code.visualstudio.com/) with [Jupyter extension](https://marketplace.visualstudio.com/items?itemName=ms-toolsai.jupyter) enabled
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and authenticated
 - [An Azure Subscription](https://azure.microsoft.com/free/) with Contributor permissions
-- [Sign in to Azure with Azure CLI](https://learn.microsoft.com/cli/azure/authenticate-azure-cli-interactively)
+- [Azure AI Foundry access](https://aka.ms/oai/access) (or use mock service)
 
-### 🚀 Get started
+## 🚀 Deployment
 
-Proceed by opening the [Jupyter notebook](private-connectivity.ipynb), and follow the steps provided.
+### 1. Clone and Setup
 
-### 📺 Video tutorial
+```bash
+git clone <repository-url>
+cd foundry-private-connectivity
+pip install -r requirements.txt
+```
 
-If you prefer a video tutorial, you can watch the [YouTube video explaining the architecture](https://www.youtube.com/watch?v=sUchn_XjpaI) or this [YouTube video lab](https://www.youtube.com/watch?v=BN1aobzBapg) that walks you through the lab.
+### 2. Deploy Infrastructure
 
-### 🗑️ Clean up resources
+Open the [Jupyter notebook](notebooks/private-connectivity.ipynb) and execute the cells to:
 
-When you're finished with the lab, you should remove all your deployed resources from Azure to avoid extra charges and keep your Azure subscription uncluttered.
-Use the [clean-up-resources notebook](clean-up-resources.ipynb) for that.
+1. **Initialize variables** - Set deployment name, locations, and model configurations
+2. **Create resource group** - Provision the Azure resource group
+3. **Deploy Bicep template** - Deploy all infrastructure (15-20 minutes):
+   - Virtual Network with subnets
+   - Azure AI Foundry with private endpoint
+   - APIM integrated in VNet
+   - Front Door with Private Link
+   - Key Vault with secrets
+   - Jumpbox VM with managed identity
+   - MCP API configuration
+
+4. **Approve Private Link** - Approve Front Door connection to APIM
+5. **Disable APIM public access** - Lock down APIM to private network only
+
+### 3. Verify Deployment Outputs
+
+The deployment provides:
+- `frontDoorEndpointHostName` - Public endpoint for testing
+- `apimResourceGatewayURL` - Private APIM URL (inaccessible from internet)
+- `keyVaultUrl` - Key Vault URL for secrets
+- `aiFoundryProjectEndpoint` - AI Foundry project endpoint
+
+## 🧪 Testing from Jumpbox
+
+### Connect to Jumpbox
+
+Use Azure Bastion to connect to the VM:
+
+```bash
+az network bastion ssh \
+  --name bastion-host \
+  --resource-group <resource-group> \
+  --target-resource-id <vm-resource-id> \
+  --auth-type password \
+  --username azureuser
+```
+
+Or connect via the Azure Portal: Navigate to the VM → Connect → Bastion
+
+### Create Python Scripts
+
+Once connected to the jumpbox, create the required scripts:
+
+#### 1. Create `load_env_from_kv.py`
+
+Copy the content from [`src/load_env_from_kv.py`](src/load_env_from_kv.py) using the same `cat` method.
+
+#### 2. Create `sample_agents_mcp.py`
+
+Copy the content from [`src/sample_agents_mcp.py`](src/sample_agents_mcp.py) using the same `cat` method.
+
+#### 3. Create `utils.py`
+
+Copy the content from [`src/utils.py`](src/utils.py) using the same `cat` method.
+
+
+### Run the Agent
+
+```bash
+# Activate virtual environment
+source ~/venv/bin/activate
+
+# Get Key Vault URL from deployment outputs
+KEY_VAULT_URL="https://kv-xxxxx.vault.azure.net/"
+
+# Run the MCP agent
+python3 ~/scripts/sample_agents_mcp.py $KEY_VAULT_URL
+```
+
+The script will:
+1. Load secrets from Key Vault using managed identity
+2. Create an AI agent with MCP tools
+3. Send a test message ("Order sku-123 with 5 items")
+4. Process MCP tool calls through APIM
+5. Display the conversation and results
+
+## 🧹 Clean Up Resources
+
+When finished, delete all resources to avoid charges:
+Use [clean-up-resources notebook](notebooks/clean-up-resources.ipynb).
+
+## 📚 Additional Resources
+
+- [Azure API Management Private Endpoints](https://learn.microsoft.com/azure/api-management/private-endpoint)
+- [Azure Front Door Private Link](https://learn.microsoft.com/azure/frontdoor/private-link)
+- [Azure AI Foundry Documentation](https://learn.microsoft.com/azure/ai-services/)
+- [Model Context Protocol](https://modelcontextprotocol.io/)

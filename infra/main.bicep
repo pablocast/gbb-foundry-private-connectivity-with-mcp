@@ -648,6 +648,9 @@ resource networkInterface 'Microsoft.Network/networkInterfaces@2023-09-01' = {
 resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
   name: vmName
   location: resourceGroup().location
+  identity:{
+    type: 'SystemAssigned'
+  }
   properties: {
     priority: 'Spot'
     evictionPolicy: 'Deallocate'
@@ -687,6 +690,57 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
       }
     }
   }
+}
+
+resource vmExtension 'Microsoft.Compute/virtualMachines/extensions@2023-09-01' = {
+  parent: vm
+  name: 'customScript'
+  location: resourceGroup().location
+  properties: {
+    publisher: 'Microsoft.Azure.Extensions'
+    type: 'CustomScript'
+    typeHandlerVersion: '2.1'
+    autoUpgradeMinorVersion: true
+    settings: {
+      script: base64('''
+        #!/bin/bash
+        set -e
+        
+        # Update package lists
+        apt-get update
+        
+        # Install Python and venv
+        apt-get install -y python3 python3-pip python3-venv python3-full
+        
+        # Create a virtual environment for the azureuser
+        mkdir -p /home/azureuser/scripts
+        python3 -m venv /home/azureuser/venv
+        
+        # Install packages in the virtual environment
+        /home/azureuser/venv/bin/pip install --upgrade pip
+        /home/azureuser/venv/bin/pip install requests azure-identity azure-ai-projects azure-ai-agents==1.2.0b6 requests jsonref python-dotenv
+
+        # Set ownership
+        chown -R azureuser:azureuser /home/azureuser/venv
+        chown -R azureuser:azureuser /home/azureuser/scripts
+        
+        echo "Setup completed successfully"
+      ''')
+    }
+  }
+}
+
+resource vmAiDeveloperRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(vm.id, aiFoundryName, '')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '53ca6127-db72-4b80-b1b0-d745d6d5456d') // Azure AI User
+    principalId: vm.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    vm
+  ]
 }
 
 
@@ -781,6 +835,30 @@ resource logAnalyticsWorkspaceDiagnostics 'Microsoft.Insights/diagnosticSettings
   }
 }
 
+// Key Vault module
+module keyVaultModule './modules/keyvault.bicep' = {
+  name: 'keyVaultDeployment'
+  params: {
+    keyVaultName: 'kv-${suffix}'
+    location: resourceGroup().location
+    tenantId: subscription().tenantId
+    vmPrincipalId: vm.identity.principalId
+    privateEndpointSubnetId: subnetPe.id
+    virtualNetworkId: virtualNetwork.id
+    secrets: {
+      'MCP-SERVER-URL': 'https://${frontDoorEndpoint.properties.hostName}/order-mcp/mcp'
+      'MCP-SERVER-LABEL': 'order_mcp'
+      'AZURE-AI-PROJECT-ENDPOINT': foundryAccountModule.outputs.aiFoundryProjectEndpoint
+      'AZURE-AI-MODEL-DEPLOYMENT-NAME': modelsConfig[0].name
+    }
+  }
+  dependsOn: [
+    vm
+    foundryAccountModule
+    frontDoorEndpoint
+  ]
+}
+
 // ------------------
 //    MARK: OUTPUTS
 // ------------------
@@ -791,4 +869,4 @@ output apimSubscriptionKey string = apimSubscription.listSecrets().primaryKey
 output frontDoorEndpointHostName string = frontDoorEndpoint.properties.hostName
 output ai_project_endpoint string = foundryAccountModule.outputs.aiFoundryProjectEndpoint
 output ai_model_deployment_name string = modelsConfig[0].name
-
+output keyVaultUrl string = keyVaultModule.outputs.keyVaultUrl

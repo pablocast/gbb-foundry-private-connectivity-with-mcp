@@ -9,160 +9,172 @@ from azure.ai.agents.models import (
     SubmitToolApprovalAction,
     ToolApproval,
 )
-import utils
-from dotenv import load_dotenv
+from load_env_from_kv import load_secrets_from_keyvault
 
-load_dotenv(override=True)
-
-# Get MCP server configuration from environment variables
-mcp_server_url = os.environ.get("MCP_SERVER_URL")
-mcp_server_label = os.environ.get("MCP_SERVER_LABEL")
-
-project_client = AIProjectClient(
-    endpoint=os.environ["AZURE_AI_PROJECT_ENDPOINT"],
-    credential=DefaultAzureCredential(),
-)
-
-mcp_tool = McpTool(
-    server_label=mcp_server_label,
-    server_url=mcp_server_url,
-    allowed_tools=[],  
-)
-
-def get_access_token():
-    output = utils.run("az account get-access-token --resource \"https://azure-api.net/authorization-manager\"")
-    if output.success and output.json_data:
-        access_token = output.json_data['accessToken']
-        return access_token
+def run_agent(key_vault_url):
+    """Run the MCP agent with the given Key Vault URL"""
+    
+    # Load secrets from Key Vault
+    if key_vault_url:
+        load_secrets_from_keyvault(key_vault_url)
     else:
-        raise Exception("Failed to obtain access token. Ensure you are logged in with 'az login'.")
+        raise Exception("KEY_VAULT_URL is required")
+    
+    # Get MCP server configuration from environment variables
+    mcp_server_url = os.environ.get("MCP_SERVER_URL")
+    mcp_server_label = os.environ.get("MCP_SERVER_LABEL")
 
-access_token = get_access_token()
-print("Obtained access token for MCP server.")
-
-# Create agent with MCP tool and process agent run
-with project_client:
-    agents_client = project_client.agents
-
-    # Create a new agent.
-    # NOTE: To reuse existing agent, fetch it with get_agent(agent_id)
-    agent = agents_client.create_agent(
-        model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
-        name="my-mcp-agent",
-        instructions="You are a helpful agent that can use MCP tools to assist users. Use the available MCP tools to answer questions and perform tasks.",
-        tools=mcp_tool.definitions,
+    project_client = AIProjectClient(
+        endpoint=os.environ["AZURE_AI_PROJECT_ENDPOINT"],
+        credential=DefaultAzureCredential(),
     )
-    # [END create_agent_with_mcp_tool]
 
-    print(f"Created agent, ID: {agent.id}")
-    print(f"MCP Server: {mcp_tool.server_label} at {mcp_tool.server_url}")
-
-    # Create thread for communication
-    thread = agents_client.threads.create()
-    print(f"Created thread, ID: {thread.id}")
-
-    # Create message to thread
-    message = agents_client.messages.create(
-        thread_id=thread.id,
-        role="user",
-        content="Order sku-123 with 5 items",
+    mcp_tool = McpTool(
+        server_label=mcp_server_label,
+        server_url=mcp_server_url,
+        allowed_tools=[],  
     )
-    print(f"Created message, ID: {message.id}")
 
-    # [START handle_tool_approvals]
-    # Create and process agent run in thread with MCP tools
-    mcp_tool.update_headers("Authorization", f"Bearer {access_token}")
-    # mcp_tool.set_approval_mode("never")  # Uncomment to disable approval requirement
-    run = agents_client.runs.create(thread_id=thread.id, agent_id=agent.id, tool_resources=mcp_tool.resources)
-    print(f"Created run, ID: {run.id}")
+    # Get access token using managed identity
+    credential = DefaultAzureCredential()
+    access_token = credential.get_token("https://azure-api.net/authorization-manager/.default").token
+    print("Obtained access token for MCP server.")
 
-    while run.status in ["queued", "in_progress", "requires_action"]:
-        time.sleep(0.1)
-        run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
+    # Create agent with MCP tool and process agent run
+    with project_client:
+        agents_client = project_client.agents
 
-        if run.status == "requires_action" and isinstance(run.required_action, SubmitToolApprovalAction):
-            tool_calls = run.required_action.submit_tool_approval.tool_calls
-            if not tool_calls:
-                print("No tool calls provided - cancelling run")
-                agents_client.runs.cancel(thread_id=thread.id, run_id=run.id)
-                break
+        # Create a new agent
+        agent = agents_client.create_agent(
+            model=os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"],
+            name="my-mcp-agent",
+            instructions="You are a helpful agent that can use MCP tools to assist users. Use the available MCP tools to answer questions and perform tasks.",
+            tools=mcp_tool.definitions,
+        )
 
-            tool_approvals = []
-            for tool_call in tool_calls:
-                if isinstance(tool_call, RequiredMcpToolCall):
-                    try:
-                        print(f"Approving tool call: {tool_call}")
-                        tool_approvals.append(
-                            ToolApproval(
-                                tool_call_id=tool_call.id,
-                                approve=True,
-                                headers=mcp_tool.headers,
+        print(f"Created agent, ID: {agent.id}")
+        print(f"MCP Server: {mcp_tool.server_label} at {mcp_tool.server_url}")
+
+        # Create thread for communication
+        thread = agents_client.threads.create()
+        print(f"Created thread, ID: {thread.id}")
+
+        # Create message to thread
+        message = agents_client.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content="Order sku-123 with 5 items",
+        )
+        print(f"Created message, ID: {message.id}")
+
+        # Create and process agent run in thread with MCP tools
+        mcp_tool.update_headers("Authorization", f"Bearer {access_token}")
+        run = agents_client.runs.create(thread_id=thread.id, agent_id=agent.id, tool_resources=mcp_tool.resources)
+        print(f"Created run, ID: {run.id}")
+
+        while run.status in ["queued", "in_progress", "requires_action"]:
+            time.sleep(0.1)
+            run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
+
+            if run.status == "requires_action" and isinstance(run.required_action, SubmitToolApprovalAction):
+                tool_calls = run.required_action.submit_tool_approval.tool_calls
+                if not tool_calls:
+                    print("No tool calls provided - cancelling run")
+                    agents_client.runs.cancel(thread_id=thread.id, run_id=run.id)
+                    break
+
+                tool_approvals = []
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, RequiredMcpToolCall):
+                        try:
+                            print(f"Approving tool call: {tool_call}")
+                            tool_approvals.append(
+                                ToolApproval(
+                                    tool_call_id=tool_call.id,
+                                    approve=True,
+                                    headers=mcp_tool.headers,
+                                )
                             )
-                        )
-                    except Exception as e:
-                        print(f"Error approving tool_call {tool_call.id}: {e}")
+                        except Exception as e:
+                            print(f"Error approving tool_call {tool_call.id}: {e}")
 
-            if tool_approvals:
-                agents_client.runs.submit_tool_outputs(
-                    thread_id=thread.id, run_id=run.id, tool_approvals=tool_approvals
-                )
-
-        print(f"Current run status: {run.status}")
-        # [END handle_tool_approvals]
-
-    print(f"Run completed with status: {run.status}")
-    if run.status == "failed":
-        print(f"Run failed: {run.last_error}")
-
-    # Display run steps and tool calls
-    run_steps = agents_client.run_steps.list(thread_id=thread.id, run_id=run.id)
-
-    # Loop through each step
-    for step in run_steps:
-        print(f"Step {step['id']} status: {step['status']}")
-
-        # Check if there are tool calls in the step details
-        step_details = step.get("step_details", {})
-        tool_calls = step_details.get("tool_calls", [])
-
-        if tool_calls:
-            print("  MCP Tool calls:")
-            for call in tool_calls:
-                print(f"    Tool Call ID: {call.get('id')}")
-                print(f"    Type: {call.get('type')}")
-
-        if isinstance(step_details, RunStepActivityDetails):
-            for activity in step_details.activities:
-                for function_name, function_definition in activity.tools.items():
-                    print(
-                        f'  The function {function_name} with description "{function_definition.description}" will be called.:'
+                if tool_approvals:
+                    agents_client.runs.submit_tool_outputs(
+                        thread_id=thread.id, run_id=run.id, tool_approvals=tool_approvals
                     )
-                    if len(function_definition.parameters) > 0:
-                        print("  Function parameters:")
-                        for argument, func_argument in function_definition.parameters.properties.items():
-                            print(f"      {argument}")
-                            print(f"      Type: {func_argument.type}")
-                            print(f"      Description: {func_argument.description}")
-                    else:
-                        print("This function has no parameters")
 
-        print()  # add an extra newline between steps
+            print(f"Current run status: {run.status}")
 
-    # Fetch and log all messages
-    messages = agents_client.messages.list(thread_id=thread.id, order=ListSortOrder.ASCENDING)
-    print("\nConversation:")
-    print("-" * 50)
-    for msg in messages:
-        if msg.text_messages:
-            last_text = msg.text_messages[-1]
-            print(f"{msg.role.upper()}: {last_text.text.value}")
-            print("-" * 50)
+        print(f"Run completed with status: {run.status}")
+        if run.status == "failed":
+            print(f"Run failed: {run.last_error}")
 
-    # Example of dynamic tool management
-    print(f"\nDemonstrating dynamic tool management:")
-    print(f"Current allowed tools: {mcp_tool.allowed_tools}")
+        # Display run steps and tool calls
+        run_steps = agents_client.run_steps.list(thread_id=thread.id, run_id=run.id)
 
-    # Clean-up and delete the agent once the run is finished.
-    # NOTE: Comment out this line if you plan to reuse the agent later.
-    agents_client.delete_agent(agent.id)
-    print("Deleted agent")
+        # Loop through each step
+        for step in run_steps:
+            print(f"Step {step['id']} status: {step['status']}")
+
+            # Check if there are tool calls in the step details
+            step_details = step.get("step_details", {})
+            tool_calls = step_details.get("tool_calls", [])
+
+            if tool_calls:
+                print("  MCP Tool calls:")
+                for call in tool_calls:
+                    print(f"    Tool Call ID: {call.get('id')}")
+                    print(f"    Type: {call.get('type')}")
+
+            if isinstance(step_details, RunStepActivityDetails):
+                for activity in step_details.activities:
+                    for function_name, function_definition in activity.tools.items():
+                        print(
+                            f'  The function {function_name} with description "{function_definition.description}" will be called.:'
+                        )
+                        if len(function_definition.parameters) > 0:
+                            print("  Function parameters:")
+                            for argument, func_argument in function_definition.parameters.properties.items():
+                                print(f"      {argument}")
+                                print(f"      Type: {func_argument.type}")
+                                print(f"      Description: {func_argument.description}")
+                        else:
+                            print("This function has no parameters")
+
+            print()  # add an extra newline between steps
+
+        # Fetch and log all messages
+        messages = agents_client.messages.list(thread_id=thread.id, order=ListSortOrder.ASCENDING)
+        print("\nConversation:")
+        print("-" * 50)
+        for msg in messages:
+            if msg.text_messages:
+                last_text = msg.text_messages[-1]
+                print(f"{msg.role.upper()}: {last_text.text.value}")
+                print("-" * 50)
+
+        # Example of dynamic tool management
+        print(f"\nDemonstrating dynamic tool management:")
+        print(f"Current allowed tools: {mcp_tool.allowed_tools}")
+
+        # Clean-up and delete the agent once the run is finished
+        agents_client.delete_agent(agent.id)
+        print("Deleted agent")
+
+
+if __name__ == "__main__":
+    import sys
+    
+    # Get Key Vault URL from command line argument or environment variable
+    if len(sys.argv) > 1:
+        key_vault_url = sys.argv[1]
+    else:
+        key_vault_url = os.environ.get("KEY_VAULT_URL")
+    
+    if not key_vault_url:
+        print("Error: KEY_VAULT_URL must be provided as argument or environment variable")
+        print("Usage: python sample_agents_mcp.py <key-vault-url>")
+        sys.exit(1)
+    
+    print(f"Using Key Vault: {key_vault_url}")
+    run_agent(key_vault_url)
