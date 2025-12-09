@@ -2,12 +2,14 @@
 
 A hands-on lab demonstrating secure agent consumption through private networking with Azure AI Foundry, API Management, and Front Door. Features MCP (Model Context Protocol) integration, private endpoints, and agent-based interactions. MCP servers are only accessible through the frontdoor. 
 
-![architecture](architecture.png)
 
 ## 🏗️ Architecture
 
 This lab demonstrates a fully private AI infrastructure:
 
+![architecture](architecture.png)
+
+Core Components:
 - **Azure AI Foundry**: AI Services account with private endpoint access only
 - **Azure API Management (APIM)**: Deployed in VNet, manages traffic to AI services via private endpoints
 - **Azure Front Door**: Premium tier with Private Link to APIM - the only publicly accessible endpoint
