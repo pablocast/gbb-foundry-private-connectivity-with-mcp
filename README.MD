@@ -134,7 +134,7 @@ Now you can test the agent:
 
 ##### Test 3: Authorized Access via Front Door
 
--Access the MCP server through Front Door with a valid authorization token
+- Access the MCP server through Front Door with a valid authorization token
 - Expected Result: Successful response, demonstrating the complete secure flow: Client → Front Door → Private Link → APIM → MCP Server
 
 ![Execution Evidence](docs/execution-evidence.png)
