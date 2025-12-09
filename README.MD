@@ -114,18 +114,30 @@ The script will:
 4. Process MCP tool calls through APIM
 5. Display the conversation and results
 
-### Expected Output
+### Test the Agent
 
-When you run the agent successfully, you'll see output similar to this:
+Now you can test the agent: 
+
+#### Test 1: Public Access to APIM
+
+- Access the APIM endpoint directly through its public URL
+- Expected Result: Request should be blocked or restricted, demonstrating that direct APIM access is protected
+
+![Execution Evidence](docs/unauthorized_apim.png)
+
+##### Test 2: Unauthorized MCP Access
+
+- Attempt to call the MCP server without an authorization token
+- Expected Result: 401 Unauthorized, validating OAuth enforcement
+
+ ![Execution Evidence](docs/unauthorized_mcp.png)
+
+##### Test 3: Authorized Access via Front Door
+
+-Access the MCP server through Front Door with a valid authorization token
+- Expected Result: Successful response, demonstrating the complete secure flow: Client → Front Door → Private Link → APIM → MCP Server
 
 ![Execution Evidence](docs/execution-evidence.png)
-
-The output shows:
-- Run status progressing through states (IN_PROGRESS → COMPLETED)
-- MCP tool calls being invoked
-- The PlaceOrder function being called with parameters
-- The conversation between user and assistant
-- Order confirmation with order ID 5219
 
 ## 🧹 Clean Up Resources
 
